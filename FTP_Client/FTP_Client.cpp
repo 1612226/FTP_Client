@@ -49,15 +49,15 @@ void sendCmd(CSocket& c, string msg){
 }
 string printReply(CSocket& c){
 
-	char response[MAX_BUF_LEN]={0};
-	int byte=c.Receive(response, MAX_BUF_LEN, 0);
+	char response[MAX_BUF_LEN] = { 0 };
+	int byte = c.Receive(response, MAX_BUF_LEN, 0);
 	response[byte] = '\0';
 	string responseCode = string(response, 3);
 	string response2 = string(response);
 	cout << response;
 	int pos = response2.find("\r\n");
-	if (pos != response2.length()-2){
-		responseCode = string(response2,pos+2, 3);
+	if (pos != response2.length() - 2){
+		responseCode = string(response2, pos + 2, 3);
 	}
 	return responseCode;
 	//return string(response);
@@ -74,7 +74,7 @@ portNumber getPort(CSocket& c){ //get port and ip
 }
 string normalizeIP(string IP){
 	string res = IP;
-	for (int i = 0; i <res.length(); i++)
+	for (int i = 0; i < res.length(); i++)
 	if (res[i] == '.') res[i] = ',';
 	return res;
 }
@@ -83,20 +83,222 @@ bool login(CSocket& c){
 	cout << "username: ";
 	cin >> request;
 	sendCmd(c, "user " + request);
-	responseCode=printReply(c);
+	responseCode = printReply(c);
 	cout << "password: ";
 	cin >> request;
-	sendCmd (c,"PASS " + request);
+	sendCmd(c, "PASS " + request);
 	responseCode = printReply(c);
 	if (responseCode == "230") {
 		return true;
 	}
 	return false;
-
 }
 
 string ip;  //global ip
 portNumber port; //global port
+
+
+
+string localDir;    //always two backslash  "//"
+void getDir(string d, vector<string> & f);
+vector<string> split(string s);
+//passive mode--------------------------------------
+bool pasvDataConnection(CSocket& c, CSocket& dataConnect){
+	sendCmd(c, "pasv\r\n");
+	//receive and port
+	char response[MAX_BUF_LEN] = { 0 };
+	int byte = c.Receive(response, MAX_BUF_LEN, 0);
+	response[byte] = '\0';
+	string s = string(response);
+	//cout << s << endl;
+	int k = s.length() - 1;
+	while (s[k] != ')') {
+		s.erase(k); k--;
+	}
+	vector<string> port;
+	while (port.size() < 2){
+		s.erase(s.end() - 1);
+		int i = s.length() - 1;
+		while (s[i] != ',') i--;
+		port.push_back(s.substr(i + 1));
+		s.erase(i + 1);
+	}
+	int portP = stoi(port[1]) * 256 + stoi(port[0]);
+	//denormalize IP
+	for (int i = 0; i < ip.length(); i++){
+		if (ip[i] == ',') ip[i] = '.';
+	}
+	// end denormalize IP
+	return dataConnect.Connect(GetWC(ip.c_str()), portP);
+}
+
+void lspasv(CSocket& c){
+	//normalize IP
+	/*for (int i = 0; i < ip.length(); i++){
+		if (ip[i] == '.') ip[i] = ',';
+		}*/
+	//port(N+1)
+	if (port.p[1] < 255) port.p[1]++;
+	else port.p[0]++;
+	int portN = port.p[0] * 256 + port.p[1];
+
+	//tạo kết nối
+	CSocket dataConnect;
+	dataConnect.Create(portN);
+	//if (!flag) lspasv(c);
+
+	if (pasvDataConnection(c, dataConnect)){
+		sendCmd(c, "NLST");
+		string _226 = printReply(c);
+		printReply(dataConnect);
+		dataConnect.Close(); //đóng trước, ok, đóng để c (client) nhận msg từ server (tránh conflict)
+		if (_226 != "226") printReply(c);
+	}
+	else lspasv(c);
+}
+
+void dirpasv(CSocket& c){
+	if (port.p[1] < 255) port.p[1]++;
+	else port.p[0]++;
+	int portN = port.p[0] * 256 + port.p[1];
+
+	//tạo kết nối
+	CSocket dataConnect;
+	dataConnect.Create(portN);
+
+
+	if (pasvDataConnection(c, dataConnect)){
+		sendCmd(c, "LIST");
+		string _226 = printReply(c);
+		printReply(dataConnect);
+		dataConnect.Close();
+		if (_226 != "226") printReply(c);
+	}
+	else dirpasv(c);
+}
+void putpasv(CSocket& c, string filename){   //ko duoc put file đã tồn tại
+	if (port.p[1] < 255) port.p[1]++;
+	else port.p[0]++;
+	int portN = port.p[0] * 256 + port.p[1];
+
+	//tạo kết nối
+	CSocket dataConnect;
+	dataConnect.Create(portN);
+	//if (!flag) putpasv(c, filename);
+
+
+	if (pasvDataConnection(c, dataConnect)){
+		//sendCmd(c, "TYPE I");
+		//printReply(c);
+		sendCmd(c, "STOR " + filename);
+		string _226 = printReply(c);
+
+		ifstream fi((localDir + "\\" + filename).c_str(), ios::in | ios::binary); //create file already to write
+		char buf[1024];
+
+		fi.seekg(ios::beg);
+		if (fi.is_open()) {
+			while (!fi.eof()){
+				fi.read(buf, 1024); //1024 chars ~ 1024 bytes
+				int numChar = fi.gcount();  //the number of chars (bytes) already transferred from file fi to buf 
+				while (numChar > 0){			// send immediately after read from fi file
+					int lenBufSend = min(1024, numChar);   //tránh ghi dư 
+					numChar -= dataConnect.Send(buf, lenBufSend);
+				}
+			}
+		}
+		else cout << "Can't open the file!";
+		fi.close();
+		dataConnect.Close(); //đóng trước, đóng để client nó nhận msg từ server, avoid conflicting
+		if (_226 != "226") printReply(c);
+	}
+	else putpasv(c, filename);
+}
+
+void getpasv(CSocket& c, string filename){
+	if (port.p[1] < 255) port.p[1]++;
+	else port.p[0]++;
+	int portN = port.p[0] * 256 + port.p[1];
+
+	//tạo kết nối
+	CSocket dataConnect;
+	dataConnect.Create(portN);
+
+
+	//if (!flag) getpasv(c, filename);
+	if (pasvDataConnection(c, dataConnect)){
+		sendCmd(c, "RETR " + filename);
+		string _226 = printReply(c);
+		ofstream fo((localDir + "\\" + filename).c_str(), ios::out | ios::binary); //create file already to write
+		char buf[1024];
+		int byteNum = 0;
+		do{
+			byteNum = dataConnect.Receive(buf, 1024, 0);
+			fo.write(buf, byteNum);
+		} while (byteNum > 0);
+
+		fo.close();
+		dataConnect.Close();  //đóng trước, đóng để c (client) nhận msg từ server (tránh conflict)
+		if (_226 != "226") printReply(c);
+	}
+	else getpasv(c, filename);
+
+}
+
+void mputpasv(CSocket& c, string filename){  //filename like *.txt
+	vector<string> fname;
+	getDir(localDir, fname);
+	filename.erase(filename.begin());
+	for (int i = 0; i < fname.size(); i++){
+		if (fname[i].find(filename) != -1){
+			cout << "mput " + fname[i] + "?";
+			char ch = getchar();
+			if (ch == 10){
+				putpasv(c, fname[i]);
+			}
+		}
+	}
+}
+void mgetpasv(CSocket& c, string filename){  //example filename: *.txt
+	sendCmd(c, "TYPE A");
+	printReply(c);
+	if (port.p[1] < 255) port.p[1]++;
+	else port.p[0]++;
+	int portN = port.p[0] * 256 + port.p[1];
+	CSocket dataConnect;
+	dataConnect.Create(portN);
+
+	vector<string> fname;
+
+	// create data connection
+	if (pasvDataConnection(c, dataConnect)){
+		sendCmd(c, "NLST " + filename);
+		string _226 = printReply(c);
+		char response[MAX_BUF_LEN];
+		int byte = dataConnect.Receive(response, MAX_BUF_LEN, 0);
+		response[byte] = '\0';
+		fname = split(string(response));
+		dataConnect.Close();
+		//delay
+		if (_226 != "226") printReply(c);
+	}
+	else{ mgetpasv(c, filename); }
+
+	sendCmd(c, "TYPE A");
+	printReply(c);
+	for (int i = 0; i < fname.size(); i++){
+		cout << "mget " + fname[i] + "?";
+		char ch = getchar();
+		if (ch == 10){				 //enter là 10, đkm mất 10 mins
+			getpasv(c, fname[i]);
+		}
+	}
+}
+
+
+//NX: dataConntect thay cho  serverConnect 
+// active: client mở port chờ kết nối (đóng vai trò server), passive: gửi kết nối lên server (client thực thụ)
+//end passive mode---------------------------------------
 
 //2) Liệt kê được danh sách các thư mục, tập tin trên Server (ls,dir)
 void ls(CSocket& c){
@@ -111,11 +313,11 @@ void ls(CSocket& c){
 	datasock.Create(portN);
 	datasock.Listen(); //be on a temporoty server
 	// create data connection
-	string cmd = "PORT " + ip + "," + to_string(port.p[0]) + "," + to_string(port.p[1])+"\r\n";
+	string cmd = "PORT " + ip + "," + to_string(port.p[0]) + "," + to_string(port.p[1]) + "\r\n";
 	sendCmd(c, cmd);
 	printReply(c);
-	sendCmd(c,"NLST");
-	string _226=printReply(c);
+	sendCmd(c, "NLST");
+	string _226 = printReply(c);
 	//
 	if (datasock.Accept(serverConnect)){
 		printReply(serverConnect);
@@ -125,8 +327,8 @@ void ls(CSocket& c){
 			string tmp2 = printReply(c);
 		}
 	}
-	else{  ls(c); }
-	
+	else{ ls(c); }
+
 	datasock.Close();
 }
 void dir(CSocket& c){
@@ -168,12 +370,12 @@ void cd(CSocket& c, string& path){
 }
 
 //8. Thay đổi đường dẫn dưới client
-string localDir;    //always two backslash  "//"
+
 void lcd(const string& path){
 	//handle path by duplicate backslash
 	if (CreateDirectory(GetWC(path.c_str()), NULL) == TRUE)
 	{
-		cout << "Local directory now "+path+"\n";
+		cout << "Local directory now " + path + "\n";
 		localDir = path;
 	}
 	else if (GetLastError() == ERROR_ALREADY_EXISTS)
@@ -201,7 +403,7 @@ void get(CSocket& c, string filename){
 	string cmd = "PORT " + ip + "," + to_string(port.p[0]) + "," + to_string(port.p[1]) + "\r\n";
 	sendCmd(c, cmd);
 	printReply(c);
-	sendCmd(c, "RETR "+filename);
+	sendCmd(c, "RETR " + filename);
 	string _226 = printReply(c);
 	if (datasock.Accept(serverConnect)){
 		ofstream fo((localDir + "\\" + filename).c_str(), ios::out | ios::binary); //create file already to write
@@ -215,7 +417,7 @@ void get(CSocket& c, string filename){
 		fo.close();
 		serverConnect.Close();
 		//print reply after
-		if(_226!="226") printReply(c);
+		if (_226 != "226") printReply(c);
 	}
 	else{ get(c, filename); }
 
@@ -239,7 +441,7 @@ void put(CSocket& c, string filename){   //ko duoc put file đã tồn tại
 	sendCmd(c, cmd);
 	printReply(c);
 	sendCmd(c, "STOR " + filename);
-	string _226=printReply(c);
+	string _226 = printReply(c);
 	//
 	if (datasock.Accept(serverConnect)){
 		ifstream fi((localDir + "\\" + filename).c_str(), ios::in | ios::binary); //create file already to write
@@ -251,25 +453,25 @@ void put(CSocket& c, string filename){   //ko duoc put file đã tồn tại
 				fi.read(buf, 1024); //1024 chars ~ 1024 bytes
 				int numChar = fi.gcount();  //the number of chars (bytes) already transferred from file fi to buf 
 				while (numChar > 0){			// send immediately after read from fi file
-					int lenBufSend = min(1024, numChar);   //trách ghi dư 
+					int lenBufSend = min(1024, numChar);   //tránh ghi dư 
 					numChar -= serverConnect.Send(buf, lenBufSend);
 				}
 			}
 		}
-		else cout<<"Can't open the file!";
+		else cout << "Can't open the file!";
 		fi.close();
 		//print reply after
 		serverConnect.Close();   //đóng để client nó nhận msg từ server, avoid conflicting
-		if(_226!="226") printReply(c);
+		if (_226 != "226") printReply(c);
 	}
-	else{put(c, filename); }
+	else{ put(c, filename); }
 
 	datasock.Close();
 }
 
 //9. Xóa 1 file trên server
 void del(CSocket& c, string filename){
-	sendCmd(c,"DELE " + filename);
+	sendCmd(c, "DELE " + filename);
 	printReply(c);
 }
 
@@ -280,7 +482,7 @@ void mkdir(CSocket& c, string& foldername){
 }
 
 //12. Xóa thư mục rỗng trên server (rmkdir)
-void rmkdir(CSocket& c,string& foldername){
+void rmkdir(CSocket& c, string& foldername){
 	sendCmd(c, "XRMD " + foldername);
 	printReply(c);
 }
@@ -296,7 +498,7 @@ vector<string> split(string s){
 	vector<string> res;
 	char tmp[100];
 	int j = 0;
-	for (int i = 0; i<s.length(); i++){
+	for (int i = 0; i < s.length(); i++){
 		if (s[i] == '\r') {
 			tmp[j] = '\0';
 			j = 0;
@@ -325,8 +527,8 @@ void mget(CSocket& c, string filename){  //example filename: *.txt
 	string cmd = "PORT " + ip + "," + to_string(port.p[0]) + "," + to_string(port.p[1]) + "\r\n";
 	sendCmd(c, cmd);
 	printReply(c);
-	sendCmd(c, "NLST "+filename);
-	string _226=printReply(c);
+	sendCmd(c, "NLST " + filename);
+	string _226 = printReply(c);
 	//
 	vector<string> fname;
 	if (datasock.Accept(serverConnect)){
@@ -336,7 +538,7 @@ void mget(CSocket& c, string filename){  //example filename: *.txt
 		fname = split(string(response));
 		serverConnect.Close();
 		//delay
-		if(_226!="226") printReply(c);
+		if (_226 != "226") printReply(c);
 	}
 	else{ mget(c, filename); }
 	sendCmd(c, "TYPE A");
@@ -481,13 +683,15 @@ int _tmain(int argc, TCHAR* argv[], TCHAR* envp[])
 			while (!login(client)){};
 			port = getPort(client);
 			int k = 1;
+			// passive mode
+			bool pasv = false;
 			while (1){
 				cout << "ftp> ";
 				vector<string> token;
 				token.clear();
 				string word;
 				string line;
-				if(k) cin.ignore(),k=0;
+				if (k) cin.ignore(), k = 0;
 				getline(cin, line);
 				stringstream ss;
 				ss << line;
@@ -497,22 +701,31 @@ int _tmain(int argc, TCHAR* argv[], TCHAR* envp[])
 
 				if (token[0] == "!ls") { system("ls"); cout << endl; }			//system("command"); gọi vào command line
 				if (token[0] == "!dir") { system("dir"); cout << endl; }
-				if (token[0] == "ls") 
-					ls(client);
-				if (token[0] == "dir") dir(client);
+				if (token[0] == "ls") {
+					if (pasv) lspasv(client);
+					else ls(client);
+				}
+				if (token[0] == "dir") {
+					if (pasv) dirpasv(client);
+					else dir(client);
+				}
 				if (token[0] == "put"){
-					put(client, token[1]); //token[1] is filename from local computer
+					if (pasv) putpasv(client, token[1]);
+					else put(client, token[1]); //token[1] is filename from local computer
 				}
 				if (token[0] == "get"){
-					get(client, token[1]); //token[1] is filename
+					if (pasv) getpasv(client, token[1]);
+					else get(client, token[1]); //token[1] is filename
 				}
 				if (token[0] == "mput"){
-					mput(client, token[1]);
+					if (pasv) mputpasv(client, token[1]);
+					else mput(client, token[1]);
 				}
 				if (token[0] == "mget"){
-					mget(client, token[1]);
+					if (pasv) mgetpasv(client, token[1]);
+					else mget(client, token[1]);
 				}
-				if (token[0] == "cd") 
+				if (token[0] == "cd")
 					cd(client, token[1]);
 				if (token[0] == "lcd"){   //temporary don't use path contain space because delimination is space in getline(...)
 					if (token.size() == 1) {
@@ -528,22 +741,29 @@ int _tmain(int argc, TCHAR* argv[], TCHAR* envp[])
 					mdelete(client, token[1]);
 				}
 				if (token[0] == "mkdir") {
-					mkdir(client,token[1]);
+					mkdir(client, token[1]);
 				}
-				if (token[0] == "rmkdir") {
-					rmkdir(client,token[1]);
+				if (token[0] == "rmdir") {
+					rmkdir(client, token[1]);
 				}
 				if (token[0] == "pwd"){
 					pwd(client);
 				}
-				
+
+
+				if (token[0] == "pasv"){
+					sendCmd(client, "pasv");
+					//cout << "227 Entering Passive Mode\n";
+					printReply(client);
+					pasv = true;
+				}
+
 				if (token[0] == "exit" || token[0] == "quit") {
 					cout << "Goodbye!";
 					break;
 				}
 			}
 			client.Close();
-			//serverConnect.Close();
 		}
 	}
 	else
